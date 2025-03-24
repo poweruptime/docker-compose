@@ -1,0 +1,55 @@
+name: poweruptime-local
+
+services:
+  traefik:
+    command:
+      - '--providers.file.filename=/config/traefik.yml'
+      - '--providers.file.watch=true'
+      - '--providers.docker=true'
+      - '--providers.docker.exposedByDefault=false'
+      - '--providers.docker.endPoint=tcp://dockersocket:2375'
+      - '--providers.docker.network=proxy'
+      - '--entryPoints.http.address=:80'
+      - '--api.dashboard=true'
+    labels:
+      traefik.enable: true
+      traefik.http.routers.traefik.rule: PathPrefix(`/traefik`) || HeaderRegexp(`Referer`, `.*/traefik/.*`)
+      traefik.http.middlewares.traefik-stripprefix.stripprefix.prefixes: /traefik
+      traefik.http.routers.traefik.middlewares: traefik-stripprefix@docker
+      traefik.http.routers.traefik.service: api@internal
+      traefik.http.routers.traefik.entrypoints: http
+
+  poweruptime-db:
+    #image: postgres:17.2-bookworm # Uncomment to use a custom version for local testing
+    environment:
+      POSTGRES_DB: ${DATABASE_NAME:-poweruptime}
+      POSTGRES_USER: ${DATABASE_USER:-poweruptime}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:?}
+
+  poweruptime-rabbitmq:
+    image: ${RABBIT_IMAGE:?}-management # Always use the `management` version locally (for debugging)
+    labels:
+      traefik.enable: true
+      traefik.http.routers.poweruptime-rabbitmq.rule: PathPrefix(`/rabbit`)
+      traefik.http.middlewares.rabbitmq-stripprefix.stripprefix.prefixes: /rabbit
+      traefik.http.routers.poweruptime-rabbitmq.middlewares: rabbitmq-stripprefix@docker
+      traefik.http.routers.poweruptime-rabbitmq.entrypoints: http
+      traefik.http.services.poweruptime-rabbitmq.loadbalancer.server.port: 15672
+      traefik.docker.network: poweruptime-local_proxy
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBIT_USERNAME:-poweruptime}
+      RABBITMQ_DEFAULT_PASS: ${RABBIT_PASSWORD:?}
+    networks:
+      - proxy
+
+  poweruptime-backend:
+    labels:
+      traefik.http.routers.poweruptime-backend.rule: PathPrefix(`/api`)
+      traefik.http.routers.poweruptime-backend.entrypoints: http
+      traefik.docker.network: poweruptime-local_proxy
+
+  poweruptime-web:
+    labels:
+      traefik.http.routers.poweruptime-web.rule: PathPrefix(`/`)
+      traefik.http.routers.poweruptime-web.entrypoints: http
+      traefik.docker.network: poweruptime-local_proxy
