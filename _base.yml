@@ -31,7 +31,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${DATABASE_NAME:-poweruptime}
-      POSTGRES_USER: ${DATABASE_USER:-poweruptime}
+      POSTGRES_USER: ${DATABASE_USERNAME:-poweruptime}
       POSTGRES_PASSWORD: ${DATABASE_PASSWORD:?}
     volumes:
       - poweruptime-db-data:/var/lib/postgresql/data:z
@@ -86,6 +86,9 @@ services:
     container_name: poweruptime-web
     image: ghcr.io/poweruptime/web:${POWERUPTIME_VERSION:?}
     restart: unless-stopped
+    environment:
+      HOST: ${POWERUPTIME_HOST:?}
+      API_HOST: ${API_HOST:-${POWERUPTIME_HOST}}
     labels:
       traefik.enable: true
       traefik.http.services.poweruptime-web.loadbalancer.server.port: 4200
