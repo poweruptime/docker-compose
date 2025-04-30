@@ -31,7 +31,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${DATABASE_NAME:-poweruptime}
-      POSTGRES_USER: ${DATABASE_USER:-poweruptime}
+      POSTGRES_USER: ${DATABASE_USERNAME:-poweruptime}
       POSTGRES_PASSWORD: ${DATABASE_PASSWORD:?}
     volumes:
       - poweruptime-db-data:/var/lib/postgresql/data:z
@@ -88,7 +88,7 @@ services:
     restart: unless-stopped
     labels:
       traefik.enable: true
-      traefik.http.services.poweruptime-web.loadbalancer.server.port: 4200
+      traefik.http.services.poweruptime-web.loadbalancer.server.port: 80
       traefik.http.routers.poweruptime-web.middlewares: security-headers@file,security-headers-web@file,compress@file
     networks:
       - poweruptime-infrastructure
