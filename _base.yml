@@ -57,14 +57,30 @@ services:
       - poweruptime-infrastructure
     healthcheck:
       test: rabbitmq-diagnostics -q ping
-      interval: 10s
+      interval: 30s
+      timeout: 60s
+      retries: 5
+      start_period: 60s
+
+  poweruptime-apprise:
+    container_name: poweruptime-apprise
+    image: ${APPRISE_IMAGE:?}
+    restart: unless-stopped
+    environment:
+      - APPRISE_STATEFUL_MODE=disabled
+      - APPRISE_WORKER_COUNT=${APPRISE_WORKER_COUNT}
+    networks:
+      - poweruptime-infrastructure
+    healthcheck:
+      test: ['CMD', 'curl', '--fail', 'http://localhost:8000/status']
+      interval: 30s
       timeout: 60s
       retries: 5
       start_period: 60s
 
   poweruptime-backend:
     container_name: poweruptime-backend
-    image: ghcr.io/poweruptime/backend:${POWERUPTIME_VERSION:?}
+    image: dafnik/poweruptime-backend:${POWERUPTIME_VERSION:?}
     restart: unless-stopped
     depends_on:
       poweruptime-rabbitmq:
@@ -84,7 +100,7 @@ services:
 
   poweruptime-web:
     container_name: poweruptime-web
-    image: ghcr.io/poweruptime/web:${POWERUPTIME_VERSION:?}
+    image: dafnik/poweruptime-web:${POWERUPTIME_VERSION:?}
     restart: unless-stopped
     labels:
       traefik.enable: true

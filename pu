@@ -1,0 +1,481 @@
+#!/usr/bin/env bash
+set -euo pipefail
+trap 'echo "ERROR"' ERR
+
+check_requirements() {
+  local missing=()
+  local cmd
+  for cmd in docker gpg git openssl lsof sudo sed cp rm mkdir ls grep cut tr date tee source cat; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+      missing+=("$cmd")
+    fi
+  done
+
+  if [ "${#missing[@]}" -gt 0 ]; then
+    echo "Error: Missing required commands: ${missing[*]}" >&2
+    exit 1
+  fi
+}
+
+check_requirements
+
+LOCAL=false
+DRY_RUN=false
+CMD=""
+TARGET=""
+
+usage() {
+  cat <<EOF
+Usage: $0 [--local] [--dry-run] <command> [target] [extra]
+
+Commands:
+  up               Deploy the stack (incl. pull)
+  down             Stop & remove the stack
+  restart          Restart the stack
+  pull             Pull images per versions.env
+  update           Checkout, backup DB & redeploy stack
+  setup            Initial project setup
+  start            Alias for up
+  stop             Alias for down
+  backup           Create DB backup
+  backup-prune     Prune all but latest 5 backups
+  backup-verify    Verify encrypted DB backup
+  backup-extract   Extract encrypted DB backup
+  backup-import    Import encrypted DB backup (DANGEROUS)
+  config           Print combined compose config
+  version          Show current version
+
+Options:
+  --dryRun        Print commands without executing
+  --local          Use local compose files (local environment)
+  -h, --help       Show this help
+EOF
+}
+
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --local)
+        LOCAL=true
+        shift
+        ;;
+      --dryRun)
+        DRY_RUN=true
+        shift
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      up|down|start|stop|restart|pull|backup|backup-prune|config|version|setup)
+        CMD="$1"
+        shift
+        ;;
+      update)
+        CMD="update"
+        if [[ $# -ge 2 && ! "$2" =~ ^- ]]; then
+          TARGET="$2"
+          shift 2
+        else
+          shift
+        fi
+        ;;
+      backup-verify|backup-extract|backup-import)
+        CMD="$1"
+        if [[ $# -ge 2 && ! "$2" =~ ^- ]]; then
+          TARGET="$2"
+          shift 2
+        else
+          shift
+        fi
+        ;;
+      *)
+        echo "Unknown option: $1"
+        usage
+        exit 1
+        ;;
+    esac
+  done
+
+  if [[ -z "$CMD" ]]; then
+    usage
+    exit 1
+  fi
+}
+
+setup_compose_args() {
+  if [[ "$LOCAL" == true ]]; then
+    COMPOSE_ARGS=(
+      -f _base.yml -f local.yml
+      --env-file versions.env
+      --env-file .env
+    )
+  else
+    COMPOSE_ARGS=(
+      -f _base.yml -f prod.yml
+      --env-file versions.env
+      --env-file .env
+    )
+  fi
+}
+
+run_cmd() {
+  if $DRY_RUN; then
+    printf '+ %s\n' "$*"
+  else
+    "$@"
+  fi
+}
+
+docker_compose() {
+  if $DRY_RUN; then
+    echo "+ docker compose ${COMPOSE_ARGS[*]} $*"
+  else
+    docker compose "${COMPOSE_ARGS[@]}" "$@"
+  fi
+}
+
+confirm() {
+  local prompt="${1:-Are you sure?}"
+  local ans
+
+  while true; do
+    # -r: raw input, -p: prompt
+    read -r -p "$prompt [y/N] " ans
+
+    case "$ans" in
+      [Yy]|[Yy][Ee][Ss][Jj]) return 0 ;;
+      [Nn]|[Nn][Oo]|"")  return 1 ;;
+      *)
+        echo "Please answer yes or no." ;;
+    esac
+  done
+}
+
+prompt_for_editor() {
+  local possible=(nano vim vi emacs code subl gedit)
+  local installed=()
+  for cmd in "${possible[@]}"; do
+    if command -v "$cmd" >/dev/null 2>&1; then
+      installed+=("$cmd")
+    fi
+  done
+
+  if (( ${#installed[@]} == 0 )); then
+    PS3="No editors detected. Please type your editor command: "
+    select _ in other; do
+      read -r -p "Editor command: " cmd
+      echo "$cmd"
+      return
+    done
+  fi
+
+  PS3="No default editor set. Please select one: "
+  local options=("${installed[@]}" other)
+  select opt in "${options[@]}"; do
+    if [[ " ${installed[*]} " == *" $opt "* ]]; then
+      echo "$opt"
+      return
+    elif [[ $opt == other ]]; then
+      read -r -p "Enter the editor command (with flags): " cmd
+      echo "$cmd"
+      return
+    else
+      echo "Invalid selection." >&2
+    fi
+  done
+}
+
+get_editor() {
+  # note the :- expansions to avoid nounset errors
+  if [[ -n "${VISUAL:-}" ]]; then
+    echo "${VISUAL}"
+  elif [[ -n "${EDITOR:-}" ]]; then
+    echo "${EDITOR}"
+  else
+    prompt_for_editor
+  fi
+}
+
+ts()  { date +%Y%m%d%H%M%S; }
+log() { printf '%s: %s\n' "$(ts)" "$*"; }
+err() { printf '%s: ERROR: %s\n' "$(ts)" "$*" >&2; }
+
+source_env() {
+  if [ ! -f .env ]; then
+    err ".env file not found."; exit 1
+  fi
+
+  # Load environment variables
+  # shellcheck source=/dev/null
+  source .env
+
+  # Validate required vars
+  : "${DATABASE_USER:?Error: DATABASE_USER must be set in .env}"
+  : "${DATABASE_PASSWORD:?Error: DATABASE_PASSWORD must be set in .env}"
+  : "${DATABASE_NAME:?Error: DATABASE_NAME must be set in .env}"
+}
+
+do_pull() {
+  docker_compose pull
+}
+
+do_up() {
+  docker_compose pull
+  docker_compose up -d
+  if ! $DRY_RUN; then
+    if $LOCAL; then
+      echo "Successfully started poweruptime locally."
+      echo "  - Web interface: http://localhost/"
+      echo "  - API: http://localhost/api"
+      echo "  - Traefik dashboard: http://localhost/traefik/dashboard/"
+      echo "  - RabbitMQ Management: http://localhost/rabbit/"
+    else
+      docker image prune -a -f
+      echo "Successfully deployed"
+    fi
+  fi
+}
+
+do_down() {
+  docker_compose down
+}
+
+do_restart() {
+  docker_compose restart
+}
+
+do_config() {
+  docker_compose config
+}
+
+do_version() {
+  if [[ ! -f versions.env ]]; then
+    err "versions.env not found"; exit 1
+  fi
+  grep -E '^POWERUPTIME_VERSION=' versions.env \
+    | cut -d= -f2- | tr -d '"' \
+    || { err "POWERUPTIME_VERSION not set"; exit 1; }
+}
+
+do_backup() {
+  local dir=./backup/poweruptime-db
+  local ts out pg_cmd gpg_cmd
+  mkdir -p "$dir"
+  ts=$(date +%Y%m%d%H%M%S)
+  out="$dir/${ts}.sql.gpg"
+  pg_cmd=(
+    docker exec --env "PGPASSWORD=$DATABASE_PASSWORD" poweruptime-db pg_dump -U "$DATABASE_USER" "$DATABASE_NAME"
+  )
+  gpg_cmd=(
+    gpg --batch --passphrase "$DATABASE_PASSWORD" -c -o "$out"
+  )
+  if $DRY_RUN; then
+    printf '+ %s | %s\n' "${pg_cmd[*]}" "${gpg_cmd[*]}"
+  else
+    "${pg_cmd[@]}" | "${gpg_cmd[@]}"
+    echo "Wrote backup to $out"
+  fi
+}
+
+do_backup_prune() {
+  local dir=./backup/poweruptime-db files f
+  readarray -t files < <(ls -1t "$dir"/*.sql.gpg 2>/dev/null || true)
+  for f in "${files[@]:5}"; do
+    if $DRY_RUN; then
+      printf '+ rm -f %s\n' "$f"
+    else
+      rm -f "$f"
+    fi
+  done
+}
+
+do_backup_verify() {
+  if [[ -z "$TARGET" ]]; then
+    err "Missing backup file"; usage; exit 1
+  fi
+  gpg --batch --passphrase "$DATABASE_PASSWORD" --decrypt "$TARGET" >/dev/null
+  echo "Verified: $TARGET"
+}
+
+do_backup_extract() {
+  if [[ -z "$TARGET" ]]; then
+    err "Missing backup file"; usage; exit 1
+  fi
+  local out=${2:-"${TARGET%.gpg}"}
+  if $DRY_RUN; then
+    echo "+ gpg --batch --passphrase '$DATABASE_PASSWORD' --decrypt '$TARGET' > '$out'"
+  else
+    gpg --batch --passphrase "$DATABASE_PASSWORD" --decrypt "$TARGET" > "$out"
+    echo "Extracted to $out"
+  fi
+}
+
+do_backup_import() {
+  if [[ -z "$TARGET" ]]; then
+    err "Missing backup file"; usage; exit 1
+  fi
+  do_backup_verify
+  if ! confirm "Restore '$TARGET' into '$DATABASE_NAME'?"; then
+    echo "Import cancelled."; exit 1
+  fi
+  log "Importing $TARGET"
+  if $DRY_RUN; then
+    echo "+ gpg --batch --passphrase '$DATABASE_PASSWORD' --decrypt '$TARGET' \
+    | docker exec -i --env PGPASSWORD='$DATABASE_PASSWORD' poweruptime-db psql -U '$DATABASE_USER' -d '$DATABASE_NAME'"
+  else
+    gpg --batch --passphrase "$DATABASE_PASSWORD" --decrypt "$TARGET" \
+    | docker exec -i --env PGPASSWORD="$DATABASE_PASSWORD" poweruptime-db psql -U "$DATABASE_USER" -d "$DATABASE_NAME"
+  fi
+}
+
+do_update() {
+  local log_file=./backup/update.log
+  mkdir -p "$(dirname "$log_file")"
+
+  if [[ -d ../web && -d ../backend ]] && ! $DRY_RUN; then
+    log "Dev folders detected; skipping update" >>"$log_file"
+    exit 1
+  fi
+
+  # In non‐dry‐run mode, pipe ALL output through tee(1):
+  if ! $DRY_RUN; then
+    exec > >(tee -a "$log_file") 2>&1
+  fi
+
+  log "Update started"
+
+  if [[ -z "$TARGET" ]]; then
+    TARGET=main
+    log "TARGET not supplied, defaulting to 'main'"
+  fi
+
+  if [[ "$TARGET" == main || "$TARGET" == beta ]]; then
+    local branch
+    branch=$(git rev-parse --abbrev-ref HEAD)
+    if [[ "$branch" != "$TARGET" ]]; then
+      err "You are on '$branch', but '$TARGET' is needed"
+      exit 1
+    fi
+    run_cmd git pull
+  else
+    if ! confirm "Checkout '$TARGET'?"; then
+      err "Checkout cancelled"
+      exit 1
+    fi
+    run_cmd git fetch --tags
+    run_cmd git checkout "$TARGET"
+  fi
+
+  log "Backing up DB"
+  do_backup
+
+  log "Pruning backups"
+  do_backup_prune
+
+  log "Redeploying stack"
+  do_up
+
+  log "Update finished"
+}
+
+do_setup() {
+  if [[ "$DRY_RUN" != true && -f .env ]]; then
+    echo "Setup already completed (.env exists). Exiting."
+    exit 1
+  fi
+
+  if [[ "$DRY_RUN" == true ]]; then
+    echo "dryRun mode: skipping .env existence check"
+  fi
+
+  echo "Copying .env.example to .env..."
+  run_cmd cp .env.example .env
+
+  if confirm "Generate DATABASE_PASSWORD & RABBIT_PASSWORD now?"; then
+    echo "Generating secrets..."
+    DB_PASS=$(openssl rand -base64 64 \
+      | tr -dc A-Za-z0-9 \
+      | head -c60)
+    RB_PASS=$(openssl rand -base64 64 \
+      | tr -dc A-Za-z0-9 \
+      | head -c60)
+
+    if grep -q '^DATABASE_PASSWORD=' .env; then
+      if $DRY_RUN; then
+        echo -e "+ sed -i.bak\n\
++  -e 's|^DATABASE_PASSWORD=.*|DATABASE_PASSWORD=\"$DB_PASS\"|'\n\
++  -e 's|^RABBIT_PASSWORD=.*|RABBIT_PASSWORD=\"$RB_PASS\"|'\n\
++  .env"
+      else
+        sed -i.bak \
+          -e "s|^DATABASE_PASSWORD=.*|DATABASE_PASSWORD=\"$DB_PASS\"|" \
+          -e "s|^RABBIT_PASSWORD=.*|RABBIT_PASSWORD=\"$RB_PASS\"|" \
+          .env
+      fi
+
+      run_cmd rm .env.bak
+      echo "Replaced DATABASE_PASSWORD & RABBIT_PASSWORD in .env."
+    else
+      if $DRY_RUN; then
+        echo "+ echo 'DATABASE_PASSWORD=$DB_PASS' >>.env"
+        echo "+ echo 'RABBIT_PASSWORD=$RB_PASS' >>.env"
+      else
+        {
+          echo "DATABASE_PASSWORD=$DB_PASS"
+          echo "RABBIT_PASSWORD=$RB_PASS"
+        } >>.env
+      fi
+
+      echo "Appended DATABASE_PASSWORD & RABBIT_PASSWORD to .env."
+    fi
+  else
+    echo "Skipping secret generation. Remember to set them in .env."
+  fi
+
+  if confirm "Check if ports 80/443 are in use?"; then
+    for port in 80 443; do
+      if sudo lsof -iTCP:"$port" -sTCP:LISTEN -t >/dev/null; then
+        echo "Error: port $port is already in use. Please free it and retry."
+        exit 1
+      fi
+    done
+    echo "Ports 80 and 443 are free."
+  else
+    echo "Skipping port checks."
+  fi
+
+  # 5) Let user fill out the rest
+  echo "Please fill out the remaining .env variables:"
+  editor=$(get_editor)
+  if $DRY_RUN; then
+    echo "+ $editor .env"
+  else
+    $editor .env
+  fi
+
+  echo "Setup complete. Start the stack with './pu start'"
+}
+
+
+main() {
+  parse_args "$@"
+  setup_compose_args
+  case "$CMD" in
+    up|start)           do_up                             ;;
+    down|stop)          do_down                           ;;
+    pull)               do_pull                           ;;
+    restart)            do_restart                        ;;
+    update)             do_update                         ;;
+    setup)              do_setup                          ;;
+    backup)             source_env && do_backup           ;;
+    backup-prune)       source_env && do_backup_prune     ;;
+    backup-verify)      source_env && do_backup_verify    ;;
+    backup-extract)     source_env && do_backup_extract   ;;
+    backup-import)      source_env && do_backup_import    ;;
+    config)             do_config                         ;;
+    version)            do_version                        ;;
+  esac
+}
+
+main "$@"
