@@ -80,7 +80,7 @@ services:
 
   poweruptime-backend:
     container_name: poweruptime-backend
-    image: ghcr.io/poweruptime/backend:${POWERUPTIME_VERSION:?}
+    image: dafnik/poweruptime-backend:${POWERUPTIME_VERSION:?}
     restart: unless-stopped
     depends_on:
       poweruptime-rabbitmq:
@@ -100,11 +100,11 @@ services:
 
   poweruptime-web:
     container_name: poweruptime-web
-    image: ghcr.io/poweruptime/web:${POWERUPTIME_VERSION:?}
+    image: dafnik/poweruptime-web:${POWERUPTIME_VERSION:?}
     restart: unless-stopped
     labels:
       traefik.enable: true
-      traefik.http.services.poweruptime-web.loadbalancer.server.port: 80
+      traefik.http.services.poweruptime-web.loadbalancer.server.port: 4200
       traefik.http.routers.poweruptime-web.middlewares: security-headers@file,security-headers-web@file,compress@file
     networks:
       - poweruptime-infrastructure
