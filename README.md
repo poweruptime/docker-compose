@@ -2,10 +2,13 @@
 
 Docker Compose configuration for running [poweruptime](https://github.com/poweruptime/poweruptime).
 
-|                           **Container Registries**                           |
-| :--------------------------------------------------------------------------: |
-|     [Web](https://github.com/poweruptime/poweruptime/pkgs/container/web)     |
-| [Backend](https://github.com/poweruptime/poweruptime/pkgs/container/backend) |
+## Table of contents
+
+1. [How to Install](#how-to-install)
+2. [Commands](#commands)
+3. [OAuth2 Guide](#oauth2-guide)
+4. [Environment variables](#environment-variables)
+5. [Other stuff](#good-to-know)
 
 ## How to install
 
@@ -27,14 +30,17 @@ Docker Compose configuration for running [poweruptime](https://github.com/poweru
    ```shell
    ./pu setup
    ```
+   You can also start the stack
 
 ### Manual
 
-3. Copy `.env.exmaple` to `.env`
+3. Make sure no other services listen on port `80` and `443`.
+
+4. Copy `.env.exmaple` to `.env`
    ```shell
    cp .env.example .env
    ```
-4. Fill out the necessary .env variables.
+5. Fill out the necessary .env variables.
 
    ```shell
    nano .env
@@ -53,23 +59,69 @@ Docker Compose configuration for running [poweruptime](https://github.com/poweru
    > [!NOTE]  
    > The `DATABASE_PASSWORD` is also used for encrypting your database backups.
 
-5. Make sure no other services listen on port `80` and `443`.
 6. Start the stack
    ```shell
    ./pu start
    ```
 
-### Stop the stack
+### Commands
+
+#### Start the stack
+
+```shell
+./pu start
+```
+
+#### Stop the stack
 
 ```shell
 ./pu stop
 ```
 
-### Update the stack
+#### Update the stack
 
 ```shell
 ./pu update
 ```
+
+## OAuth2 Guide
+
+Enabling OAuth2 lets any user registered with your Identity Provider (IdP) log in (or create an account) on your poweruptime instance.
+
+Accounts are matched by E-Mail address: if an OAuth2 user’s E-Mail matches an existing account, they simply log into that account.
+
+1. User Uniqueness
+   - Identification is by E-Mail address only.
+   - No duplicate accounts: the same E-Mail always maps to one user.
+
+2. Feature Parity
+
+   Users who sign up or log in via OAuth2 have exactly the same capabilities as those who register via the dashboard:
+   - Deactivate/reactivate accounts
+   - Set up MFA
+     - OAuth2 login skips MFA,
+     - but MFA still applies when logging in with E-Mail & password
+   - Reset password
+   - Change password (the initial password for an user registered/created via OAuth2 user is randomly generated behind the scenes)
+   - Join teams
+   - Be granted admin rights
+
+3. Limitations
+   - With OAuth2 is enabled, users cannot change their E-Mail address (this restriction applies instance-wide to all users).
+
+All other user-management operations work exactly the same, regardless of how the account was created.
+
+### Google
+
+Take a look at what [environment variables need to be set](#google-1) and checkout [Google's OAuth2 docs](https://developers.google.com/identity/protocols/oauth2).
+
+Please note that you have to fill in all variables without a default value.
+
+### Keycloak (or any other OAuth2 Provider)
+
+Take a look at what [environment variables need to be set](#keycloak-or-any-other-oauth2-provider-1) and checkout [Keycloak's OAuth2 docs](https://www.keycloak.org/docs/latest/server_admin/index.html).
+
+Please note that you have to fill in all variables without a default value.
 
 ## Environment variables
 
@@ -113,6 +165,30 @@ These configuration values only effect the System E-Mail service.
 | `MAIL_SECURITY`          | The type of security to use for email communication. (`NONE_STARTTLS`, `TLS`) | `NONE_STARTTLS` | x        |
 | `MAIL_IGNORE_TLS_ERRORS` | Whether to ignore TLS errors when connecting to the mail server.              | `false`         | x        |
 
+### OAuth2
+
+#### Google
+
+| Name                          | Description                                                    | Default value                                     | Required |
+| ----------------------------- | -------------------------------------------------------------- | ------------------------------------------------- | -------- |
+| `OAUTH2_GOOGLE_CLIENT_ID`     | Your Google OAuth2 Client ID from the Google Cloud Console     |                                                   |          |
+| `OAUTH2_GOOGLE_CLIENT_SECRET` | Your Google OAuth2 Client Secret                               |                                                   |          |
+| `OAUTH2_GOOGLE_REDIRECT_URI`  | Callback URI registered in Google (where Google will redirect) | `{POWERUPTIME_HOST}/api/login/oauth2/code/google` |          |
+
+#### Keycloak (or any other OAuth2 Provider)
+
+| Name                                      | Description                                                                                                                                                   | Default value                                       | Required |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- | -------- |
+| `OAUTH2_KEYCLOAK_CLIENT_ID`               | Your Keycloak Client ID (as configured in the realm’s Clients)                                                                                                |                                                     |          |
+| `OAUTH2_KEYCLOAK_CLIENT_SECRET`           | Your Keycloak Client secret                                                                                                                                   |                                                     |          |
+| `OAUTH2_KEYCLOAK_REDIRECT_URI`            | The callback URI you registered in Keycloak for this application                                                                                              | `{POWERUPTIME_HOST}/api/login/oauth2/code/keycloak` |          |
+| `OAUTH2_KEYCLOAK_AUTHORIZATION_URI`       | Used by your application to initiate the OAuth 2.0/OpenID Connect authorization code flow (e.g. `https://<host>/realms/<realm>/protocol/openid-connect/auth`) |                                                     |          |
+| `OAUTH2_KEYCLOAK_ISSUER_URI`              | The issuer URI of your Keycloak realm (e.g. `https://<host>/realms/<realm>`)                                                                                  |                                                     |          |
+| `OAUTH2_KEYCLOAK_JWK_SET_URI`             | The URL where Keycloak publishes its JSON Web Key Set (e.g. `https://<host>/realms/<realms>/protocol/openid-connect/certs`)                                   |                                                     |          |
+| `OAUTH2_KEYCLOAK_TOKEN_URI`               | The endpoint in Keycloak’s OAuth 2.0 token service (e.g. `https://<host>/realms/<realm>/protocol/openid-connect/token`)                                       |                                                     |          |
+| `OAUTH2_KEYCLOAK_USER_INFO_URI`           | The OpenID Connect UserInfo endpoint URL (e.g. `https://<host>/realms/<realm>/protocol/openid-connect/userinfo`)                                              |                                                     |          |
+| `OAUTH2_KEYCLOAK_USER_NAME_ATTRIBUTE_URI` | The JWT claim or UserInfo field to treat as the principal’s username in your application                                                                      | `sub`                                               |          |
+
 ### Rate Limiting
 
 | Name                             | Description                                                         | Default value | Required |
@@ -120,6 +196,14 @@ These configuration values only effect the System E-Mail service.
 | `RATE_LIMIT_ENABLED`             | Whether rate limiting is enabled.                                   | `true`        | x        |
 | `RATE_LIMIT_DURATION_IN_SECONDS` | Duration, in seconds, of the rate limiting window.                  | `240`         | x        |
 | `RATE_LIMIT_TRIES`               | Maximum number of requests allowed within the rate limiting window. | `40`          | x        |
+
+### Performance
+
+| Name                              | Description                                                                                   | Default value | Required |
+| --------------------------------- | --------------------------------------------------------------------------------------------- | ------------- | -------- |
+| `APPRISE_WORKER_COUNT`            | Number of parallel worker processes Apprise will spawn to deliver notifications concurrently. | `-2`          | x        |
+| `RABBIT_LISTENER_CONCURRENCY`     | Number of concurrent RabbitMQ listener instances.                                             | `16`          | x        |
+| `RABBIT_LISTENER_MAX_CONCURRENCY` | Upper limit of the concurrent RabbitMQ listener instances.                                    | `16`          | x        |
 
 ### Development
 
@@ -132,10 +216,19 @@ These configuration values only effect the System E-Mail service.
 
 ## Good to know
 
+|                           **Container Registries**                           |
+| :--------------------------------------------------------------------------: |
+|     [Web](https://github.com/poweruptime/poweruptime/pkgs/container/web)     |
+| [Backend](https://github.com/poweruptime/poweruptime/pkgs/container/backend) |
+
 ### Get merged docker compose config
 
 ```shell
-docker compose -f _base.yml -f local.yml --env-file local.env config
+docker compose -f _base.yml -f local.yml --env-file .env config
+```
+
+```shell
+./pu config
 ```
 
 Will print the merged config of [\_base.yml](_base.yml) and [local.yml](local.yml) file to
@@ -145,12 +238,12 @@ standard out.
 
 Go to the [versions.env](versions.env) file, and change the version you need.
 
-## Running locally
+### Running locally
 
 Simply use the IntelliJ `Local` run configuration or run the following command to start the whole stack locally:
 
 ```shell
-bash start.local.sh
+./pu up --local
 ```
 
 - Web interface: [http://localhost/](http://localhost/)
