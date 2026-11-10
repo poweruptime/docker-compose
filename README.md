@@ -6,9 +6,10 @@ Docker Compose configuration for running [poweruptime](https://github.com/poweru
 
 1. [How to Install](#how-to-install)
 2. [Commands](#commands)
-3. [OAuth2 Guide](#oauth2-guide)
-4. [Environment variables](#environment-variables)
-5. [Other stuff](#good-to-know)
+3. [Upgrading PostgreSQL](#upgrading-postgresql)
+4. [OAuth2 Guide](#oauth2-guide)
+5. [Environment variables](#environment-variables)
+6. [Other stuff](#good-to-know)
 
 ## How to install
 
@@ -84,6 +85,82 @@ Docker Compose configuration for running [poweruptime](https://github.com/poweru
 ./pu update
 ```
 
+> [!IMPORTANT]
+> If an update requires a new PostgreSQL major version, `./pu update` aborts without changing anything.
+> `./pu start` also refuses to start while the old database volume exists and the new one has not been created yet.
+> It only checks that the new volume exists, not that the restore succeeded.
+> Follow [Upgrading PostgreSQL](#upgrading-postgresql) instead.
+
+## Upgrading PostgreSQL
+
+The data of a PostgreSQL database can't be reused by a newer major version (e.g. 17 -> 18).
+The database has to be backed up with the old version and restored into a new, empty database with the new version.
+The new version uses a new Docker volume, so the old data stays untouched and you can roll back at any time.
+
+| PostgreSQL | Docker volume                             |
+| ---------- | ----------------------------------------- |
+| 17         | `poweruptime-prod_poweruptime-db-data`    |
+| 18         | `poweruptime-prod_poweruptime-db-data-18` |
+
+Run all commands in your poweruptime directory. The stack must still be running the old version.
+
+1. Stop the backend and web (keeps the database running), so no data changes after the backup.
+   ```shell
+   docker stop poweruptime-web poweruptime-backend
+   ```
+2. Back up the database and verify the backup. Note the file name printed by `./pu backup`.
+   ```shell
+   ./pu backup
+   ./pu backup-verify backup/poweruptime-db/<timestamp>.sql.gpg
+   ```
+   > [!TIP]
+   > Copy the backup file somewhere off the server as well.
+3. Stop the stack.
+   ```shell
+   ./pu stop
+   ```
+4. Check out the new version.
+   ```shell
+   git pull
+   ```
+   ```shell
+   git fetch --tags && git checkout X.X.X
+   ```
+5. Start **only** the database. This creates a new, empty database with the new PostgreSQL version.
+   ```shell
+   docker compose -f _base.yml -f prod.yml --env-file versions.env --env-file .env up -d --wait poweruptime-db
+   ```
+   > [!WARNING]
+   > Don't start the whole stack yet. The backend would create an empty schema and the restore would fail.
+6. Check that the new version is running.
+   ```shell
+   docker exec poweruptime-db postgres --version
+   ```
+7. Restore the backup into the new database.
+   ```shell
+   ./pu backup-import backup/poweruptime-db/<timestamp>.sql.gpg
+   ```
+   > [!CAUTION]
+   > Only continue once the import prints `Import finished`. If it fails, it rolls back completely and the new database stays empty. Fix the cause (or [roll back](#rollback)) before starting the stack.
+8. Start the stack.
+   ```shell
+   ./pu start
+   ```
+9. Check that everything works and your data is there. Once you are sure, you can remove the old volume:
+   ```shell
+   docker volume rm poweruptime-prod_poweruptime-db-data
+   ```
+
+### Rollback
+
+As long as the old volume exists, you can go back to the previous version. Data written after the upgrade is lost.
+
+```shell
+./pu stop
+git checkout <previous version>
+./pu start
+```
+
 ## OAuth2 Guide
 
 Enabling OAuth2 lets any user registered with your Identity Provider (IdP) log in (or create an account) on your poweruptime instance.
@@ -115,13 +192,21 @@ All other user-management operations work exactly the same, regardless of how th
 
 Take a look at what [environment variables need to be set](#google-1) and checkout [Google's OAuth2 docs](https://developers.google.com/identity/protocols/oauth2).
 
-Please note that you have to fill in all variables without a default value.
+Authorization callback URL: `https://<POWERUPTIME_HOST>/api/login/oauth2/code/google`
+
+### GitHub
+
+Take a look at what [environment variables need to be set](#github-1) and checkout [GitHub's OAuth2 docs](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps).
+
+Authorization callback URL: `https://<POWERUPTIME_HOST>/api/login/oauth2/code/github`
 
 ### Keycloak (or any other OAuth2 Provider)
 
 Take a look at what [environment variables need to be set](#keycloak-or-any-other-oauth2-provider-1) and checkout [Keycloak's OAuth2 docs](https://www.keycloak.org/docs/latest/server_admin/index.html).
 
-Please note that you have to fill in all variables without a default value.
+Authorization callback URL: `https://<POWERUPTIME_HOST>/api/login/oauth2/code/keycloak`
+
+**Please note that you have to fill in all variables without a default value.**
 
 ## Environment variables
 
@@ -174,6 +259,14 @@ These configuration values only effect the System E-Mail service.
 | `OAUTH2_GOOGLE_CLIENT_ID`     | Your Google OAuth2 Client ID from the Google Cloud Console     |                                                   |          |
 | `OAUTH2_GOOGLE_CLIENT_SECRET` | Your Google OAuth2 Client Secret                               |                                                   |          |
 | `OAUTH2_GOOGLE_REDIRECT_URI`  | Callback URI registered in Google (where Google will redirect) | `{POWERUPTIME_HOST}/api/login/oauth2/code/google` |          |
+
+#### GitHub
+
+| Name                          | Description                                                                                           | Default value                                     | Required |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------- | -------- |
+| `OAUTH2_GITHUB_CLIENT_ID`     | Your GitHub OAuth2 Client ID from [GitHub Developer Settings](https://github.com/settings/developers) |                                                   |          |
+| `OAUTH2_GITHUB_CLIENT_SECRET` | Your GitHub OAuth2 Client Secret                                                                      |                                                   |          |
+| `OAUTH2_GITHUB_REDIRECT_URI`  | Callback URI registered in GitHub (where GitHub will redirect)                                        | `{POWERUPTIME_HOST}/api/login/oauth2/code/github` |          |
 
 #### Keycloak (or any other OAuth2 Provider)
 
